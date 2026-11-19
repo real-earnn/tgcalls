@@ -1,4 +1,6 @@
 #include "v2/NativeNetworkingImpl.h"
+#include "rtc_base/crypt_string.h"
+#include "rtc_base/proxy_info.h"
 
 #include "p2p/base/basic_packet_socket_factory.h"
 #include "p2p/client/basic_port_allocator.h"
@@ -555,6 +557,41 @@ NativeNetworkingImpl::~NativeNetworkingImpl() {
     _networkMonitorFactory.reset();
 }
 
+class TgCallsCryptStringImpl : public rtc::CryptStringImpl {
+public:
+    TgCallsCryptStringImpl(std::string const &value) :
+    _value(value) {
+    }
+
+    virtual ~TgCallsCryptStringImpl() override {
+    }
+
+    virtual size_t GetLength() const override {
+        return _value.size();
+    }
+
+    virtual void CopyTo(char* dest, bool nullterminate) const override {
+        memcpy(dest, _value.data(), _value.size());
+        if (nullterminate) {
+            dest[_value.size()] = 0;
+        }
+    }
+    virtual std::string UrlEncode() const override {
+        return _value;
+    }
+    virtual CryptStringImpl* Copy() const override {
+        return new TgCallsCryptStringImpl(_value);
+    }
+
+    virtual void CopyRawTo(std::vector<unsigned char>* dest) const override {
+        dest->resize(_value.size());
+        memcpy(dest->data(), _value.data(), _value.size());
+    }
+
+private:
+    std::string _value;
+};
+
 void NativeNetworkingImpl::resetDtlsSrtpTransport() {
     if (_enableStunMarking) {
         _turnCustomizer.reset(new TurnCustomizerImpl());
@@ -605,6 +642,14 @@ void NativeNetworkingImpl::resetDtlsSrtpTransport() {
 
     _portAllocator->set_flags(flags);
     _portAllocator->Initialize();
+    if (_proxy) {
+        rtc::ProxyInfo proxyInfo;
+        proxyInfo.type = rtc::ProxyType::PROXY_SOCKS5;
+        proxyInfo.address = rtc::SocketAddress(_proxy->host, _proxy->port);
+        proxyInfo.username = _proxy->login;
+        proxyInfo.password = rtc::CryptString(TgCallsCryptStringImpl(_proxy->password));
+        _portAllocator->set_proxy("t/1.0", proxyInfo);
+    }
 
     cricket::ServerAddresses stunServers;
     std::vector<cricket::RelayServerConfig> turnServers;

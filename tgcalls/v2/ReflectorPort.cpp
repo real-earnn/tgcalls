@@ -24,6 +24,7 @@
 #include "rtc_base/byte_order.h"
 
 #include "RawTcpSocket.h"
+#include "v2/Socks5ProxySocket.h"
 
 namespace tgcalls {
 
@@ -95,6 +96,14 @@ rtc::AsyncPacketSocket *CreateClientRawTcpSocket(
         << socket->GetError();
     }
     
+    // SilentGram: route the TCP reflector connection through the SOCKS5
+    // relay when one is configured. The stock code ignores proxy_info
+    // entirely, so without this the connection goes direct to Telegram.
+    if (proxy_info.type == rtc::PROXY_SOCKS5) {
+        socket = new AsyncSocks5ProxySocket(socket, proxy_info.address,
+                                            proxy_info.username, proxy_info.password);
+    }
+
     if (socket->Connect(remote_address) < 0) {
         RTC_LOG(LS_ERROR) << "TCP connect failed with error " << socket->GetError();
         delete socket;

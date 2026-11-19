@@ -1,4 +1,6 @@
 #include "v2/InstanceV2CompatImpl.h"
+#include "rtc_base/crypt_string.h"
+#include "rtc_base/proxy_info.h"
 
 #include "LogSinkImpl.h"
 #include "VideoCaptureInterfaceImpl.h"
@@ -331,6 +333,41 @@ struct NetworkBitrateLogRecord {
 
 } // namespace
 
+class TgCallsCryptStringImpl : public rtc::CryptStringImpl {
+public:
+    TgCallsCryptStringImpl(std::string const &value) :
+    _value(value) {
+    }
+
+    virtual ~TgCallsCryptStringImpl() override {
+    }
+
+    virtual size_t GetLength() const override {
+        return _value.size();
+    }
+
+    virtual void CopyTo(char* dest, bool nullterminate) const override {
+        memcpy(dest, _value.data(), _value.size());
+        if (nullterminate) {
+            dest[_value.size()] = 0;
+        }
+    }
+    virtual std::string UrlEncode() const override {
+        return _value;
+    }
+    virtual CryptStringImpl* Copy() const override {
+        return new TgCallsCryptStringImpl(_value);
+    }
+
+    virtual void CopyRawTo(std::vector<unsigned char>* dest) const override {
+        dest->resize(_value.size());
+        memcpy(dest->data(), _value.data(), _value.size());
+    }
+
+private:
+    std::string _value;
+};
+
 class InstanceV2CompatImplInternal : public std::enable_shared_from_this<InstanceV2CompatImplInternal> {
 public:
     InstanceV2CompatImplInternal(Descriptor &&descriptor, std::shared_ptr<Threads> threads) :
@@ -610,6 +647,14 @@ public:
         _relayPortFactory = std::make_unique<ReflectorRelayPortFactory>(_rtcServers, false, 0, _threads->getNetworkThread()->socketserver(), getCustomParameterBoolDefaultTrue(_customParameters, "network_reflector_resolve_remote_candidate_ip"));
 
         auto portAllocator = std::make_unique<cricket::BasicPortAllocator>(_networkManager.get(), _socketFactory.get(), nullptr, _relayPortFactory.get());
+        if (_proxy) {
+            rtc::ProxyInfo proxyInfo;
+            proxyInfo.type = rtc::ProxyType::PROXY_SOCKS5;
+            proxyInfo.address = rtc::SocketAddress(_proxy->host, _proxy->port);
+            proxyInfo.username = _proxy->login;
+            proxyInfo.password = rtc::CryptString(TgCallsCryptStringImpl(_proxy->password));
+            portAllocator->set_proxy("t/1.0", proxyInfo);
+        }
 
         if (getCustomParameterBool(_customParameters, "network_disable_stun_when_unconfigured")) {
             bool hasStunServer = false;
@@ -657,7 +702,7 @@ public:
         peerConnectionConfiguration.prioritize_most_likely_ice_candidate_pairs = true;
 
         for (auto &server : _rtcServers) {
-            if (server.isTcp) {
+            if (server.isTcp && !server.isTurn) {
                 continue;
             }
 
@@ -678,7 +723,7 @@ public:
                 webrtc::PeerConnectionInterface::IceServer mappedServer;
 
                 mappedServer.urls.push_back(
-                    "turn:" + address.HostAsURIString() + ":" + std::to_string(server.port));
+                    "turn:" + address.HostAsURIString() + ":" + std::to_string(server.port) + (server.isTcp ? "?transport=tcp" : ""));
                 mappedServer.username = server.login;
                 mappedServer.password = server.password;
 
