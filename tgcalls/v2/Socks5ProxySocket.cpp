@@ -34,7 +34,16 @@ int AsyncSocks5ProxySocket::Connect(const rtc::SocketAddress& addr) {
     return BufferedReadAdapter::Connect(proxy_);
 }
 
+void AsyncSocks5ProxySocket::SetUdpAssociate() {
+    udp_associate_ = true;
+}
+
 rtc::SocketAddress AsyncSocks5ProxySocket::GetRemoteAddress() const {
+    // In UDP ASSOCIATE mode the "remote" end of the UDP relay is the BND
+    // address the relay advertised, not the (meaningless) 0.0.0.0:0 target.
+    if (udp_associate_ && state_ == PS_TUNNEL) {
+        return bound_;
+    }
     return dest_;
 }
 
@@ -105,11 +114,23 @@ void AsyncSocks5ProxySocket::SendAuth() {
 }
 
 void AsyncSocks5ProxySocket::SendConnectRequest() {
-    // VER=5, CMD=1 (CONNECT), RSV=0, ATYP, DST.ADDR, DST.PORT.
+    // VER=5, CMD=1 (CONNECT) or 3 (UDP ASSOCIATE), RSV=0, ATYP, DST.ADDR,
+    // DST.PORT. UDP ASSOCIATE has no real destination: RFC 1928 says the
+    // client sends 0.0.0.0:0 and the relay replies with the BND address.
     std::string request;
     request.push_back(0x05);
-    request.push_back(0x01);
+    request.push_back(udp_associate_ ? 0x03 : 0x01);
     request.push_back(0x00);
+    if (udp_associate_) {
+        request.push_back(0x01);
+        uint32_t zero = 0;
+        request.append(reinterpret_cast<const char*>(&zero), 4);
+        uint16_t port = 0;
+        request.append(reinterpret_cast<const char*>(&port), 2);
+        DirectSend(request.data(), request.size());
+        state_ = PS_CONNECT;
+        return;
+    }
     if (!dest_.hostname().empty() && dest_.ipaddr().IsNil()) {
         // Unresolved hostname: domain form.
         if (dest_.hostname().size() > 255) {
@@ -196,6 +217,34 @@ void AsyncSocks5ProxySocket::ProcessInput(char* data, size_t* len) {
             size_t total = 4 + addrLen + 2;
             if (*len - pos < total) {
                 break; // wait for the full reply
+            }
+            if (udp_associate_) {
+                // Keep the relay's BND.ADDR/BND.PORT: that is the UDP
+                // endpoint datagrams go to for the life of the association.
+                // A domain BND is unusable here (we need a numeric target
+                // for the UDP socket), so reject it loudly.
+                if (atyp == 0x01) {
+                    in_addr v4;
+                    memcpy(&v4.s_addr, data + pos + 4, 4);
+                    // Port bytes are network order: high byte first.
+                    uint16_t port = static_cast<uint16_t>(
+                        (static_cast<uint8_t>(data[pos + 8]) << 8) |
+                        static_cast<uint8_t>(data[pos + 9]));
+                    bound_ = rtc::SocketAddress(rtc::IPAddress(v4), port);
+                } else if (atyp == 0x04) {
+                    in6_addr v6;
+                    memcpy(&v6.s6_addr, data + pos + 4, 16);
+                    uint16_t port = static_cast<uint16_t>(
+                        (static_cast<uint8_t>(data[pos + 20]) << 8) |
+                        static_cast<uint8_t>(data[pos + 21]));
+                    bound_ = rtc::SocketAddress(rtc::IPAddress(v6), port);
+                } else {
+                    RTC_LOG(LS_ERROR) << "SOCKS5: domain BND in UDP ASSOCIATE reply, cannot use";
+                    Error(ECONNREFUSED);
+                    break;
+                }
+                RTC_LOG(LS_INFO) << "SOCKS5: UDP ASSOCIATE bound at "
+                                 << bound_.ToSensitiveString();
             }
             pos += total;
             state_ = PS_TUNNEL;

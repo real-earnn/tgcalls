@@ -25,6 +25,7 @@
 
 #include "RawTcpSocket.h"
 #include "v2/Socks5ProxySocket.h"
+#include "v2/Socks5UdpSocket.h"
 
 namespace tgcalls {
 
@@ -388,6 +389,28 @@ bool ReflectorPort::CreateReflectorClientSocket() {
             socket_ = socket_factory()->CreateUdpSocket(rtc::SocketAddress(ipv4_any_address, 12345), min_port(), max_port());
         } else {
             socket_ = socket_factory()->CreateUdpSocket(rtc::SocketAddress(Network()->GetBestIP(), 0), min_port(), max_port());
+            // SilentGram UDP: route the UDP reflector media through the
+            // SOCKS5 relay via UDP ASSOCIATE when one is configured
+            // (Pakistan blocks direct UDP to Telegram reflectors). The stock
+            // code creates a direct UDP socket here with no proxy hook at
+            // all. The wrapper keeps the same local UDP socket; it only
+            // changes where the datagrams go (the relay BND) and wraps them
+            // in the SOCKS5 UDP header. Standalone-reflector mode keeps its
+            // direct socket. If the wrapper fails synchronously (no factory
+            // to open the ASSOCIATE control connection), drop the socket so
+            // the allocation-error path below runs instead of a dead port.
+            if (socket_ && !standaloneReflectorMode_ && proxy().type == rtc::PROXY_SOCKS5) {
+                if (underlying_socket_factory_) {
+                    socket_ = new AsyncSocks5UdpSocket(socket_, underlying_socket_factory_, proxy(), server_address_.address);
+                    if (socket_->GetState() == rtc::AsyncPacketSocket::STATE_CLOSED) {
+                        RTC_LOG(LS_ERROR) << "Failed to create SOCKS5 UDP socket for REFLECTOR";
+                        delete socket_;
+                        socket_ = nullptr;
+                    }
+                } else {
+                    RTC_LOG(LS_ERROR) << "No underlying socket factory for SOCKS5 UDP; using direct UDP";
+                }
+            }
         }
     } else if (server_address_.proto == cricket::PROTO_TCP) {
         RTC_DCHECK(!SharedSocket());

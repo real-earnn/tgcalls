@@ -30,6 +30,15 @@ public:
     int Close() override;
     rtc::Socket::ConnState GetState() const override;
 
+    // UDP ASSOCIATE mode (RFC 1928 §7): call before Connect(). The handshake
+    // then sends CMD=3 with a 0.0.0.0:0 target instead of CONNECT, and the
+    // reply's BND.ADDR/BND.PORT is kept in bound_address() — the relay UDP
+    // endpoint datagrams must be sent to. The TCP connection must stay open
+    // for the lifetime of the association; closing it tears the UDP relay
+    // down at the relay. Used by AsyncSocks5UdpSocket.
+    void SetUdpAssociate();
+    rtc::SocketAddress bound_address() const { return bound_; }
+
 protected:
     void OnConnectEvent(rtc::Socket* socket) override;
     void OnCloseEvent(rtc::Socket* socket, int err) override;
@@ -41,9 +50,10 @@ protected:
     void Error(int error);
 
 private:
-    rtc::SocketAddress proxy_, dest_;
+    rtc::SocketAddress proxy_, dest_, bound_;
     std::string user_;
     rtc::CryptString pass_;
+    bool udp_associate_ = false;
     enum ProxyState {
         PS_INIT,
         PS_GREETING,
