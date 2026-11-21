@@ -1353,6 +1353,7 @@ public:
     _videoContentType(descriptor.videoContentType),
     _videoCodecPreferences(std::move(descriptor.videoCodecPreferences)),
     _e2eEncryptDecrypt(descriptor.e2eEncryptDecrypt),
+    _proxy(std::move(descriptor.proxy)),
     _eventLog(std::make_unique<webrtc::RtcEventLogNull>()),
     _webrtcEnvironment(webrtc::EnvironmentFactory().Create()),
     _netEqFactory(createNetEqFactory()),
@@ -1429,7 +1430,7 @@ public:
 
         bool takeAudioLevelFromNetwork = _e2eEncryptDecrypt == nullptr;
 
-        _networkManager.reset(new ThreadLocalObject<GroupNetworkManager>(_threads->getNetworkThread(), [weak, threads = _threads, takeAudioLevelFromNetwork] () mutable {
+        _networkManager.reset(new ThreadLocalObject<GroupNetworkManager>(_threads->getNetworkThread(), [weak, threads = _threads, takeAudioLevelFromNetwork, proxy = _proxy] () mutable {
             return std::make_shared<GroupNetworkManager>(
                 fieldTrialsBasedConfig,
                 [=](const GroupNetworkManager::State &state) {
@@ -1479,7 +1480,7 @@ public:
                             strong->updateSsrcActivity(ssrc);
                         }
                     });
-                }, threads);
+                }, threads, proxy);
         }));
 
     #if USE_RNNOISE
@@ -3686,6 +3687,7 @@ private:
     VideoContentType _videoContentType{VideoContentType::None};
     std::vector<VideoCodecName> _videoCodecPreferences;
     std::function<std::vector<uint8_t>(std::vector<uint8_t> const &, int64_t, bool, int32_t)> _e2eEncryptDecrypt;
+    std::shared_ptr<Proxy> _proxy;
 
     int _nextMediaChannelDescriptionsRequestId = 0;
     std::map<int, RequestedMediaChannelDescriptions> _requestedMediaChannelDescriptions;

@@ -188,6 +188,10 @@ struct GroupInstanceDescriptor {
     std::function<void(bool)> onMutedSpeechActivityDetected;
     std::function<std::vector<uint8_t>(std::vector<uint8_t> const &, int64_t, bool, int32_t)> e2eEncryptDecrypt;
     bool isConference{false};
+    // SilentGram: the SOCKS5 call-relay proxy (the same Instance.Proxy the
+    // app passes for 1:1 calls). When set, group UDP media goes through the
+    // relay via AsyncSocks5UdpSocket, exactly like 1:1. Null = direct.
+    std::shared_ptr<Proxy> proxy;
 };
 
 template <typename T>

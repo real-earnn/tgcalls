@@ -170,6 +170,16 @@ int AsyncSocks5UdpSocket::SendTo(const void* pv, size_t cb, const rtc::SocketAdd
     if (state_ == STATE_CLOSED || destroying_) {
         return -1;
     }
+    // SilentGram group calls: the socket is created before the remote
+    // candidate is known, so destination_ starts as the IPv4-any
+    // placeholder (only its family is used, to size the TCP control
+    // socket). Learn the real destination from the first send: it makes
+    // GetRemoteAddress(), the SG-UDP markers and the inbound source check
+    // truthful, and Send() (no address) then targets it too. 1:1 calls
+    // always pass a real destination, so this never fires for them.
+    if (destination_.port() == 0) {
+        destination_ = addr;
+    }
     if (state_ != STATE_CONNECTED) {
         // Association not up yet: queue (the reflector hello is sent the
         // moment the port is created). Cap the queue; the hello is
@@ -263,7 +273,7 @@ void AsyncSocks5UdpSocket::OnControlConnected(rtc::Socket* socket) {
         return;
     }
     RTC_LOG(LS_INFO) << "SG-UDP associate=ok bnd=" << bound_.ToString()
-                     << " reflector=" << destination_.ToString()
+                     << " reflector=" << (destination_.port() == 0 ? std::string("pending") : destination_.ToString())
                      << " queued=" << pending_.size();
     state_ = STATE_CONNECTED;
     FlushQueue();
@@ -372,7 +382,7 @@ void AsyncSocks5UdpSocket::Fail(int error) {
     RTC_LOG(LS_ERROR) << "SG-UDP associate=failed phase="
                       << (state_ == STATE_CONNECTED ? "midcall" : "handshake")
                       << " error=" << error
-                      << " reflector=" << destination_.ToString()
+                      << " reflector=" << (destination_.port() == 0 ? std::string("pending") : destination_.ToString())
                       << " queued=" << pending_.size();
     error_ = error;
     state_ = STATE_CLOSED;

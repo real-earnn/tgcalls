@@ -1,10 +1,16 @@
 #include "group/GroupNetworkManager.h"
 
+#include <cstring>
+
+#include "../Instance.h"
+#include "group/Socks5UdpPacketSocketFactory.h"
 #include "p2p/base/basic_packet_socket_factory.h"
 #include "p2p/client/basic_port_allocator.h"
 #include "p2p/base/p2p_transport_channel.h"
 #include "p2p/base/basic_async_resolver_factory.h"
 #include "api/packet_socket_factory.h"
+#include "rtc_base/crypt_string.h"
+#include "rtc_base/proxy_info.h"
 #include "rtc_base/rtc_certificate_generator.h"
 #include "p2p/base/ice_credentials_iterator.h"
 #include "api/jsep_ice_candidate.h"
@@ -326,6 +332,54 @@ webrtc::CryptoOptions GroupNetworkManager::getDefaulCryptoOptions() {
     return options;
 }
 
+// SilentGram: copied verbatim from NativeNetworkingImpl.cpp — the
+// CryptString adapter the proxy password needs (it has no shared home).
+class TgCallsCryptStringImpl : public rtc::CryptStringImpl {
+public:
+    TgCallsCryptStringImpl(std::string const &value) :
+    _value(value) {
+    }
+
+    virtual ~TgCallsCryptStringImpl() override {
+    }
+
+    virtual size_t GetLength() const override {
+        return _value.size();
+    }
+
+    virtual void CopyTo(char* dest, bool nullterminate) const override {
+        memcpy(dest, _value.data(), _value.size());
+        if (nullterminate) {
+            dest[_value.size()] = 0;
+        }
+    }
+    virtual std::string UrlEncode() const override {
+        return _value;
+    }
+    virtual CryptStringImpl* Copy() const override {
+        return new TgCallsCryptStringImpl(_value);
+    }
+
+    virtual void CopyRawTo(std::vector<unsigned char>* dest) const override {
+        dest->resize(_value.size());
+        memcpy(dest->data(), _value.data(), _value.size());
+    }
+
+private:
+    std::string _value;
+};
+
+// Builds the rtc::ProxyInfo for the call-relay proxy, exactly as the 1:1
+// path does in NativeNetworkingImpl::resetDtlsSrtpTransport().
+static rtc::ProxyInfo ProxyInfoFromProxy(const Proxy& proxy) {
+    rtc::ProxyInfo proxyInfo;
+    proxyInfo.type = rtc::ProxyType::PROXY_SOCKS5;
+    proxyInfo.address = rtc::SocketAddress(proxy.host, proxy.port);
+    proxyInfo.username = proxy.login;
+    proxyInfo.password = rtc::CryptString(TgCallsCryptStringImpl(proxy.password));
+    return proxyInfo;
+}
+
 GroupNetworkManager::GroupNetworkManager(
     const webrtc::FieldTrialsView &fieldTrials,
     std::function<void(const State &)> stateUpdated,
@@ -335,7 +389,8 @@ GroupNetworkManager::GroupNetworkManager(
     std::function<void(uint32_t, uint8_t, bool)> audioActivityUpdated,
     bool zeroAudioLevel,
     std::function<void(uint32_t)> anyActivityUpdated,
-    std::shared_ptr<Threads> threads) :
+    std::shared_ptr<Threads> threads,
+    std::shared_ptr<Proxy> proxy) :
 _threads(std::move(threads)),
 _stateUpdated(std::move(stateUpdated)),
 _unknownSsrcPacketReceived(std::move(unknownSsrcPacketReceived)),
@@ -343,7 +398,8 @@ _dataChannelStateUpdated(dataChannelStateUpdated),
 _dataChannelMessageReceived(dataChannelMessageReceived),
 _audioActivityUpdated(audioActivityUpdated),
 _zeroAudioLevel(zeroAudioLevel),
-_anyActivityUpdated(anyActivityUpdated) {
+_anyActivityUpdated(anyActivityUpdated),
+_proxy(std::move(proxy)) {
     assert(_threads->getNetworkThread()->IsCurrent());
 
     _localIceParameters = PeerIceParameters(rtc::CreateRandomString(cricket::ICE_UFRAG_LENGTH), rtc::CreateRandomString(cricket::ICE_PWD_LENGTH), false);
@@ -352,7 +408,19 @@ _anyActivityUpdated(anyActivityUpdated) {
 
     _networkMonitorFactory = PlatformInterface::SharedInstance()->createNetworkMonitorFactory();
 
-    _socketFactory.reset(new rtc::BasicPacketSocketFactory(_threads->getNetworkThread()->socketserver()));
+    if (_proxy) {
+        // SilentGram v2.0.23: same SOCKS5 relay as the tested 1:1 path.
+        // The delegating factory wraps every IPv4 UDP socket the group
+        // allocator creates in AsyncSocks5UdpSocket (UDP ASSOCIATE to the
+        // same relay), so group media takes the identical route as 1:1
+        // reflector media. No proxy -> the plain factory, as before.
+        _socketFactory.reset(new Socks5UdpPacketSocketFactory(
+            std::make_unique<rtc::BasicPacketSocketFactory>(_threads->getNetworkThread()->socketserver()),
+            _threads->getNetworkThread()->socketserver(),
+            ProxyInfoFromProxy(*_proxy)));
+    } else {
+        _socketFactory.reset(new rtc::BasicPacketSocketFactory(_threads->getNetworkThread()->socketserver()));
+    }
     _networkManager = std::make_unique<rtc::BasicNetworkManager>(_networkMonitorFactory.get(), _threads->getNetworkThread()->socketserver());
     _asyncResolverFactory = std::make_unique<webrtc::BasicAsyncDnsResolverFactory>();
 
@@ -394,6 +462,15 @@ void GroupNetworkManager::resetDtlsSrtpTransport() {
     
     portAllocator->set_flags(flags);
     portAllocator->Initialize();
+
+    // SilentGram v2.0.23: hand the same SOCKS5 proxy to the group
+    // allocator that the 1:1 path sets (NativeNetworkingImpl), so group
+    // ports carry it. Unlike 1:1, do NOT set PORTALLOCATOR_DISABLE_UDP
+    // here: group calls have no relay ports, only host UDP ports —
+    // disabling them would leave no media path at all.
+    if (_proxy) {
+        portAllocator->set_proxy("t/1.0", ProxyInfoFromProxy(*_proxy));
+    }
 
     portAllocator->SetConfiguration({}, {}, 2, webrtc::NO_PRUNE, _turnCustomizer.get());
 

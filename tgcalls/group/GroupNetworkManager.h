@@ -22,7 +22,7 @@
 #include "ThreadLocalObject.h"
 
 namespace rtc {
-class BasicPacketSocketFactory;
+class PacketSocketFactory;
 class BasicNetworkManager;
 class PacketTransportInternal;
 struct NetworkRoute;
@@ -45,6 +45,7 @@ class RtpTransport;
 namespace tgcalls {
 
 struct Message;
+struct Proxy;
 class SctpDataChannelProviderInterfaceImpl;
 class Threads;
 
@@ -66,7 +67,8 @@ public:
         std::function<void(uint32_t, uint8_t, bool)> audioActivityUpdated,
         bool zeroAudioLevel,
         std::function<void(uint32_t)> anyActivityUpdated,
-        std::shared_ptr<Threads> threads);
+        std::shared_ptr<Threads> threads,
+        std::shared_ptr<Proxy> proxy);
     ~GroupNetworkManager();
 
     void start();
@@ -110,7 +112,8 @@ private:
     std::function<void(uint32_t)> _anyActivityUpdated;
 
     std::unique_ptr<rtc::NetworkMonitorFactory> _networkMonitorFactory;
-    std::unique_ptr<rtc::BasicPacketSocketFactory> _socketFactory;
+    std::unique_ptr<rtc::PacketSocketFactory> _socketFactory;
+    std::shared_ptr<Proxy> _proxy;
     std::unique_ptr<rtc::BasicNetworkManager> _networkManager;
     std::unique_ptr<webrtc::TurnCustomizer> _turnCustomizer;
     std::unique_ptr<cricket::BasicPortAllocator> _portAllocator;
