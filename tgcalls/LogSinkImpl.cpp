@@ -52,8 +52,15 @@ void LogSinkImpl::OnLogMessage(const std::string &message) {
 	int32_t milliseconds = curTime.tv_usec / 1000;
 #endif
 
-	auto &stream = _file.is_open() ? (std::ostream&)_file : _data;
-	stream
+	// SilentGram: tee every line into _data as well as the file, so
+	// result() (FinalState.debugLog) actually contains the RTC log.
+	// Upstream wrote to exactly one of them: with a logPath set, the log
+	// went to the file only and result() was always empty, so Java never
+	// saw the SG-UDP markers (VoIPService scanned an empty debugLog).
+	// _data is capped: the markers are emitted at call start, so the head
+	// of the log is what Java needs; the file keeps the full log.
+	std::ostringstream line;
+	line
 		<< (timeinfo.tm_year + 1900)
 		<< "-" << (timeinfo.tm_mon + 1)
 		<< "-" << (timeinfo.tm_mday)
@@ -62,6 +69,12 @@ void LogSinkImpl::OnLogMessage(const std::string &message) {
 		<< ":" << timeinfo.tm_sec
 		<< ":" << milliseconds
 		<< " " << message;
+	if (_file.is_open()) {
+		_file << line.str();
+	}
+	if (_data.tellp() < kMaxDataBytes) {
+		_data << line.str();
+	}
 
 #if DEBUG
     printf("%d-%d-%d %d:%d:%d:%d %s\n", timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, milliseconds, message.c_str());

@@ -3,6 +3,7 @@
 
 #include "rtc_base/logging.h"
 #include <fstream>
+#include <sstream>
 
 namespace tgcalls {
 
@@ -21,6 +22,11 @@ public:
 	}
 
 private:
+	// SilentGram: cap for the in-memory tee (see LogSinkImpl.cpp).
+	// 4 MiB bounds RAM on long calls; markers are emitted at call
+	// start, so the head of the log is what result() must carry.
+	static constexpr std::streamsize kMaxDataBytes = 4 * 1024 * 1024;
+
 	std::ofstream _file;
 	std::ostringstream _data;
 
