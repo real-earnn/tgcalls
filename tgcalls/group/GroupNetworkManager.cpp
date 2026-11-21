@@ -455,11 +455,14 @@ void GroupNetworkManager::resetDtlsSrtpTransport() {
     std::unique_ptr<cricket::BasicPortAllocator> portAllocator = std::make_unique<cricket::BasicPortAllocator>(_networkManager.get(), _socketFactory.get(), _turnCustomizer.get(), nullptr);
     
     uint32_t flags = portAllocator->flags();
-    
-    flags |=
-        cricket::PORTALLOCATOR_ENABLE_IPV6 |
-        cricket::PORTALLOCATOR_ENABLE_IPV6_ON_WIFI;
-    
+
+    // SilentGram v2.0.24: IPv6 gathering stays OFF for group calls.
+    // The SOCKS5 relay's UDP endpoint (BND) is IPv4, so an IPv6 host
+    // port can never be wrapped (Socks5UdpPacketSocketFactory returns
+    // IPv6 sockets direct) — an IPv6 candidate nominated by ICE would
+    // bypass the relay entirely. 1:1 is effectively IPv4-only for
+    // media already; group now matches it.
+
     portAllocator->set_flags(flags);
     portAllocator->Initialize();
 
@@ -521,6 +524,13 @@ void GroupNetworkManager::resetDtlsSrtpTransport() {
 
 void GroupNetworkManager::start() {
     _transportChannel->MaybeStartGathering();
+
+    // SilentGram v2.0.24: start the 20 s ICE-failure timeout — without
+    // it a group call that never connects hangs forever with no failure
+    // state (contrast NetworkManager, which starts it in the same
+    // position). checkConnectionTimeout re-schedules itself every
+    // second until the manager dies (weak_ptr guard).
+    checkConnectionTimeout();
 
     restartDataChannel();
 }
