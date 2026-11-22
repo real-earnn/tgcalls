@@ -231,7 +231,32 @@ int AsyncSocks5UdpSocket::Close() {
 }
 
 AsyncSocks5UdpSocket::State AsyncSocks5UdpSocket::GetState() const {
-    return state_;
+    // SilentGram v2.0.25: report STATE_BOUND while the socket is alive.
+    // UDPPort::PrepareAddress() creates the port's local host candidate
+    // ONLY when GetState() == STATE_BOUND (webrtc p2p/base/stun_port.cc)
+    // — a plain AsyncUDPSocket always reports BOUND once bound, and the
+    // inner socket here never emits SignalAddressReady either, so there
+    // is no other path to a host candidate. This wrapper used to report
+    // its SOCKS-association state (CONNECTING, then CONNECTED), so
+    // PrepareAddress() never ran, the port gathered NO host candidate,
+    // UDPPort::CreateConnection() returned nullptr for every remote
+    // candidate (its Candidates().empty() guard), and group ICE never
+    // sent a single STUN check: the relay log proves it — zero
+    // "new session" lines during the v2.0.24 group attempts, while the
+    // 1:1 call minutes later produced sessions immediately. 1:1 calls
+    // are unaffected (ReflectorPort drives the socket directly and never
+    // needs a local candidate). The inner UDP socket IS bound from
+    // construction, and the association state is tracked separately in
+    // state_ (SendTo already queues until CONNECTED), so BOUND is the
+    // honest report. CLOSED is still reported as CLOSED, so the
+    // factory/ReflectorPort failure checks (GetState() == STATE_CLOSED)
+    // are unaffected. The only other STATE_BOUND consumer in the
+    // vendored WebRTC is UDPPort::SendStunBindingRequest (no STUN
+    // server is configured for group calls).
+    if (state_ == STATE_CLOSED) {
+        return STATE_CLOSED;
+    }
+    return STATE_BOUND;
 }
 
 int AsyncSocks5UdpSocket::GetOption(rtc::Socket::Option opt, int* value) {

@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <iomanip>
+#include <sys/socket.h>
 
 #include "Instance.h"
 #include "VideoCaptureInterfaceImpl.h"
@@ -3114,6 +3115,19 @@ public:
             std::vector<cricket::Candidate> iceCandidates;
             for (auto const &candidate : parsedTransport.candidates) {
                 rtc::SocketAddress address(candidate.ip, stringToInt(candidate.port));
+
+                // SilentGram v2.0.25: skip IPv6 remote candidates. The
+                // SOCKS5 relay is IPv4-only and local gathering is
+                // IPv4-only (no PORTALLOCATOR_ENABLE_IPV6), so an IPv6
+                // candidate can never form a pair with any local port;
+                // dropping it keeps ICE from spending checks on an
+                // unwrappable family. (It is inert even unfiltered —
+                // UDPPort::CreateConnection rejects the family mismatch
+                // — but the server lists it first, so filter it here
+                // rather than letting it sit at the head of the list.)
+                if (address.ipaddr().family() == AF_INET6) {
+                    continue;
+                }
 
                 std::string candidateType = candidate.type;
                 if (candidateType == "host") {
